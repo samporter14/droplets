@@ -897,9 +897,10 @@ private struct ActivityPalette {
 private func activityFill(_ level: Int, palette: ActivityPalette = .notch) -> Color {
     switch level {
     case 0: return palette.empty
-    case 1: return clay.opacity(0.32)
-    case 2: return clay.opacity(0.52)
-    case 3: return clay.opacity(0.76)
+    // The same ramp as the Focus droplet's stats graph, so the two read alike.
+    case 1: return clay.opacity(0.3)
+    case 2: return clay.opacity(0.5)
+    case 3: return clay.opacity(0.75)
     default: return clay
     }
 }
