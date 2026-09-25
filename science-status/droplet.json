@@ -1,0 +1,47 @@
+{
+  "id": "science-status",
+  "name": "Science Status",
+  "version": "1.0.0",
+  "summary": "Claude Science sessions in the notch",
+  "description": "A live pill while a Claude Science session runs, a shelf list of recent sessions, and a card when one finishes or needs input. Reads Claude Science's local status and database, read-only; nothing leaves your Mac.",
+  "category": "Productivity",
+  "kit": {
+    "abi": 1,
+    "minAPI": "1.9.0"
+  },
+  "minAppVersion": "15.3.0",
+  "capabilities": [
+    "hud"
+  ],
+  "surfaces": [
+    "shelf-widget",
+    "live-activity",
+    "hud",
+    "settings-pane"
+  ],
+  "icon": "ScienceStatus.icon",
+  "creator": {
+    "name": "Sam",
+    "kind": "community",
+    "url": "https://github.com/samporter14",
+    "avatar": "Creator.png",
+    "gitlab": "your-gitlab-username"
+  },
+  "source": {
+    "repository": "https://gitlab.com/droppyformac1/droplets/-/tree/main/droplets/science-status",
+    "license": "MIT"
+  },
+  "screenshots": [
+    "shelf-widget.png",
+    "live-activity.png",
+    "settings-pane.png"
+  ],
+  "keywords": [
+    "claude",
+    "science",
+    "agent",
+    "research",
+    "session",
+    "status"
+  ]
+}

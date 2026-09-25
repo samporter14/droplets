@@ -1,0 +1,25 @@
+{
+  "fill-specializations" : [
+    { "value" : { "solid" : "srgb:0.95294,0.92941,0.89412,1.00000" } },
+    { "appearance" : "dark", "value" : { "solid" : "srgb:0.10196,0.10196,0.10196,1.00000" } }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            { "value" : { "solid" : "srgb:0.10196,0.10196,0.10196,1.00000" } },
+            { "appearance" : "dark", "value" : { "solid" : "srgb:0.95294,0.92941,0.89412,1.00000" } }
+          ],
+          "hidden" : false,
+          "image-name" : "mark.png",
+          "name" : "mark",
+          "position" : { "scale" : 0.84, "translation-in-points" : [ 0, 0 ] }
+        }
+      ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    }
+  ],
+  "supported-platforms" : { "circles" : [ "watchOS" ], "squares" : "shared" }
+}
