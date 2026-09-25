@@ -1289,7 +1289,9 @@ private struct ScienceMomentCard: View {
                 Button(action: onOpen) {
                     Text(openTitle)
                 }
-                .buttonStyle(DroppyAccentButtonStyle(size: .small))
+                // Clay, not the default blue: Anthropic keeps clay for the one
+                // primary action and uses no cool blues.
+                .buttonStyle(DroppyAccentButtonStyle(color: clay, size: .small))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
