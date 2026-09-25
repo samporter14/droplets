@@ -3,7 +3,7 @@
   "name": "Science Status",
   "version": "1.0.0",
   "summary": "Claude Science sessions in the notch",
-  "description": "A live pill while a Claude Science session runs, a shelf list of recent sessions, and a card when one finishes or needs input. Reads Claude Science's local status and database, read-only; nothing leaves your Mac.",
+  "description": "An unofficial companion for Claude Science: a live pill while a session runs, a shelf list of recent sessions, and a card when one finishes or needs input. Reads Claude Science's local status and database, read-only; nothing leaves your Mac.",
   "category": "Productivity",
   "kit": {
     "abi": 1,

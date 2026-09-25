@@ -3,6 +3,9 @@
 A Droplet for [Droppy](https://getdroppy.app): Claude Science sessions in the
 notch, modelled on Droppy's own Agents droplet.
 
+Unofficial: made by Sam, not affiliated with or endorsed by Anthropic.
+Claude is a trademark of Anthropic.
+
 - A **live activity pill** while a Claude Science session runs (with a count
   when more than one runs).
 - A **shelf widget** listing recent sessions with their state; tapping opens
