@@ -44,7 +44,7 @@ public enum SessionState: String, Sendable, Equatable, Codable {
 
     public var systemImage: String {
         switch self {
-        case .running: return "atom"
+        case .running: return "flask.fill"
         case .needsInput: return "hand.raised.fill"
         case .finished: return "checkmark.circle.fill"
         case .error: return "exclamationmark.circle.fill"

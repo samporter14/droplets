@@ -7,13 +7,16 @@ Unofficial: made by Sam, not affiliated with or endorsed by Anthropic.
 Claude is a trademark of Anthropic.
 
 - A **live activity pill** while a Claude Science session runs (with a count
-  when more than one runs).
+  when more than one runs), its flask glyph bubbling while work is under way.
 - A **shelf widget** listing recent sessions with their state; tapping opens
   the session in Claude Science.
 - An **activity graph** widget, GitHub-style: a square per day, shaded by how
   many sessions you started, messages you sent or tokens the model used that
   day (switch in the widget), as many weeks as the shelf is wide.
 - A **HUD card** when a session finishes or needs input, with an Open button.
+- A **menu bar item** whose icon shows the state (empty flask, full flask while
+  working, a hand when a session needs you) and opens your latest sessions
+  and the activity graph.
 - A **settings pane** for poll intervals, which states trigger a card, and a
   threshold that keeps short sessions quiet.
 

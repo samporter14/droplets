@@ -3,7 +3,7 @@
   "name": "Science Status",
   "version": "1.0.0",
   "summary": "Claude Science sessions in the notch",
-  "description": "An unofficial companion for Claude Science: a live pill while a session runs, a shelf list of recent sessions, and a card when one finishes or needs input. Reads Claude Science's local status and database, read-only; nothing leaves your Mac.",
+  "description": "An unofficial companion for Claude Science: a live pill while a session runs, a shelf list of recent sessions, an activity graph, a menu bar status icon, and a card when a session finishes or needs input. Reads Claude Science's local status and database, read-only; nothing leaves your Mac.",
   "category": "Productivity",
   "kit": {
     "abi": 1,
@@ -11,13 +11,15 @@
   },
   "minAppVersion": "15.3.0",
   "capabilities": [
-    "hud"
+    "hud",
+    "menu-bar"
   ],
   "surfaces": [
     "shelf-widget",
     "live-activity",
     "hud",
-    "settings-pane"
+    "settings-pane",
+    "menu-bar-extra"
   ],
   "icon": "ScienceStatus.icon",
   "creator": {

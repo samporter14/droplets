@@ -43,6 +43,10 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
             if !restoring { publishActivity() }
         }
     }
+    /// A status icon in the menu bar that opens sessions and activity. On by
+    /// default: with the notch pill shown only on hover, it is the one status
+    /// that is always in view.
+    @Published var showInMenuBar = true { didSet { save(showInMenuBar, forKey: "showInMenuBar") } }
     /// What the activity graph counts; chosen in the widget itself.
     @Published var activityMetric: ActivityMetric = .sessions { didSet { save(activityMetric, forKey: "activityMetric") } }
     @Published var pollRunning: Double = 3 { didSet { save(pollRunning, forKey: "pollRunning"); reschedule() } }
@@ -177,8 +181,10 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
     private func apply(_ snap: ScienceSnapshot) {
         guard host != nil else { fetching = false; return }
         fetching = false
-        checking = false
-        snapshot = snap
+        // Assign only real changes: every published change makes the host
+        // re-read the menu bar item and redraws the widgets.
+        if checking { checking = false }
+        if snapshot != snap { snapshot = snap }
         let transitions = engine.advance(to: snap)
         if let id = needsInputHUDSessionID, snap.readError == nil || !snap.sessions.isEmpty,
            !snap.sessions.contains(where: { $0.id == id && $0.state == .needsInput }) {
@@ -383,6 +389,7 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         hudOnNeedsInput = host.preferences.value(forKey: "hudOnNeedsInput", default: true)
         minDuration = host.preferences.value(forKey: "minDuration", default: 30)
         keepPillShowing = host.preferences.value(forKey: "keepPillShowing", default: false)
+        showInMenuBar = host.preferences.value(forKey: "showInMenuBar", default: true)
         activityMetric = host.preferences.value(forKey: "activityMetric", default: ActivityMetric.sessions)
     }
 }
@@ -436,8 +443,7 @@ private struct ScienceWidget: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DroppySpacing.sm) {
             HStack(spacing: DroppySpacing.xsm) {
-                Image(systemName: "atom")
-                    .font(.system(size: 12, weight: .medium))
+                LiveGlyph(droplet: droplet, size: 12, tint: AdaptiveColors.notchSurfaceSecondaryText)
                 Text("Science status")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 0)
@@ -607,6 +613,104 @@ private struct ScienceSessionRow: View {
     }
 }
 
+// MARK: - Glyph
+
+/// The droplet's glyph, following the droplet's state: an empty flask when
+/// idle, a flask with clay liquid and rising bubbles while a session works,
+/// a hand while one waits on the user.
+private struct LiveGlyph: View {
+    @ObservedObject var droplet: ScienceStatusDroplet
+    let size: CGFloat
+    let tint: Color
+
+    var body: some View {
+        ScienceGlyph(mode: droplet.waitingCount > 0 ? .needsInput : (droplet.isLive ? .working : .idle),
+                     size: size, tint: tint)
+    }
+}
+
+/// The only motion is inside the glyph, never around the surface Droppy
+/// owns, and none at all with Reduce Motion on. The frame is fixed, so
+/// switching modes never shifts the row.
+private struct ScienceGlyph: View {
+    enum Mode: Equatable { case idle, working, needsInput }
+
+    let mode: Mode
+    let size: CGFloat
+    let tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            switch mode {
+            case .needsInput:
+                symbol("hand.raised.fill")
+            case .idle:
+                symbol("flask")
+            case .working where reduceMotion:
+                symbol("flask.fill")
+            case .working:
+                TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                    Canvas { context, canvas in
+                        BubblingFlask.draw(in: &context, size: canvas,
+                                           time: timeline.date.timeIntervalSinceReferenceDate, tint: tint)
+                    }
+                }
+            }
+        }
+        .frame(width: size * 1.25, height: size * 1.25)
+        .transition(DroppyTransition.compactContent)
+        .accessibilityHidden(true)
+    }
+
+    private func symbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: size, weight: .medium))
+            .foregroundStyle(tint)
+    }
+}
+
+/// A flask with clay liquid whose surface rocks gently and three small
+/// bubbles rising through it, fading as they reach the surface. One loop is
+/// 1.6 s; the bubbles are staggered so one is always on its way up.
+enum BubblingFlask {
+    static func draw(in context: inout GraphicsContext, size: CGSize, time t: Double, tint: Color) {
+        var outline = context.resolve(Image(systemName: "flask"))
+        var fill = context.resolve(Image(systemName: "flask.fill"))
+        outline.shading = .color(tint)
+        fill.shading = .color(clay)
+
+        // The symbol at its own aspect ratio, centred in the square.
+        let natural = outline.size
+        let scale = min(size.width / max(natural.width, 1), size.height / max(natural.height, 1))
+        let drawn = CGSize(width: natural.width * scale, height: natural.height * scale)
+        let rect = CGRect(x: (size.width - drawn.width) / 2, y: (size.height - drawn.height) / 2,
+                          width: drawn.width, height: drawn.height)
+
+        // Liquid: the filled flask below a gently rocking surface.
+        let surface = rect.minY + rect.height * (0.55 + 0.02 * sin(t * 2.4))
+        var liquid = context
+        liquid.clip(to: Path(CGRect(x: rect.minX, y: surface, width: rect.width, height: rect.maxY - surface)))
+        liquid.draw(fill, in: rect)
+
+        // Bubbles rise from near the bottom and fade out at the surface.
+        let period = 1.6
+        let bottom = rect.minY + rect.height * 0.88
+        for i in 0..<3 {
+            let phase = (t / period + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+            let x = rect.midX + rect.width * [-0.1, 0.08, -0.02][i]
+            let y = bottom - (bottom - surface) * phase
+            let r = rect.width * (0.05 + 0.02 * phase)
+            let alpha = phase < 0.75 ? 0.85 : 0.85 * (1 - (phase - 0.75) / 0.25)
+            liquid.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                        with: .color(.white.opacity(alpha)))
+        }
+
+        // The flask itself on top, in the surface's own ink.
+        context.draw(outline, in: rect)
+    }
+}
+
 // MARK: - Activity graph widget
 
 /// Anthropic's clay, the droplet's one accent. Empty days use Droppy's own
@@ -716,6 +820,7 @@ private struct ScienceActivityWidget: View {
 private struct ActivityMetricSwitch: View {
     @Binding var selection: ActivityMetric
     let iconsOnly: Bool
+    var palette: ActivityPalette = .notch
     @State private var hovered: ActivityMetric?
 
     var body: some View {
@@ -737,12 +842,12 @@ private struct ActivityMetricSwitch: View {
                                 .frame(height: 20)
                         }
                     }
-                    .foregroundStyle(selected ? AdaptiveColors.notchSurfacePrimaryText : AdaptiveColors.notchSurfaceTertiaryText)
+                    .foregroundStyle(selected ? palette.primary : palette.tertiary)
                     .background {
                         if selected {
-                            Capsule(style: .continuous).fill(AdaptiveColors.notchSurfaceCardHoverFill)
+                            Capsule(style: .continuous).fill(palette.selectedFill)
                         } else if hovered == metric {
-                            Capsule(style: .continuous).fill(AdaptiveColors.notchSurfaceCardFill)
+                            Capsule(style: .continuous).fill(palette.hoverFill)
                         }
                     }
                     .contentShape(Capsule(style: .continuous))
@@ -758,9 +863,40 @@ private struct ActivityMetricSwitch: View {
     }
 }
 
-private func activityFill(_ level: Int) -> Color {
+/// The activity graph on the notch's black, or on the menu bar panel's
+/// system material, which follows the Mac's light or dark appearance.
+private struct ActivityPalette {
+    let empty: Color
+    let primary: Color
+    let secondary: Color
+    let tertiary: Color
+    let selectedFill: Color
+    let hoverFill: Color
+
+    static var notch: ActivityPalette {
+        ActivityPalette(
+            empty: AdaptiveColors.notchSurfaceCardFill,
+            primary: AdaptiveColors.notchSurfacePrimaryText,
+            secondary: AdaptiveColors.notchSurfaceSecondaryText,
+            tertiary: AdaptiveColors.notchSurfaceTertiaryText,
+            selectedFill: AdaptiveColors.notchSurfaceCardHoverFill,
+            hoverFill: AdaptiveColors.notchSurfaceCardFill)
+    }
+
+    static var menu: ActivityPalette {
+        ActivityPalette(
+            empty: AdaptiveColors.contrastTintAuto.opacity(0.08),
+            primary: AdaptiveColors.primaryTextAuto,
+            secondary: AdaptiveColors.secondaryTextAuto,
+            tertiary: AdaptiveColors.secondaryTextAuto.opacity(0.75),
+            selectedFill: AdaptiveColors.hoverBackgroundAuto,
+            hoverFill: AdaptiveColors.buttonBackgroundAuto)
+    }
+}
+
+private func activityFill(_ level: Int, palette: ActivityPalette = .notch) -> Color {
     switch level {
-    case 0: return AdaptiveColors.notchSurfaceCardFill
+    case 0: return palette.empty
     case 1: return clay.opacity(0.32)
     case 2: return clay.opacity(0.52)
     case 3: return clay.opacity(0.76)
@@ -773,6 +909,7 @@ private struct ActivityGridView: View {
     let metric: ActivityMetric
     let cell: CGFloat
     let gap: CGFloat
+    var palette: ActivityPalette = .notch
 
     var body: some View {
         HStack(alignment: .top, spacing: gap) {
@@ -781,7 +918,7 @@ private struct ActivityGridView: View {
                     ForEach(0..<7, id: \.self) { row in
                         if let day = week[row] {
                             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                .fill(activityFill(day.level))
+                                .fill(activityFill(day.level, palette: palette))
                                 .frame(width: cell, height: cell)
                                 .help(tooltip(day))
                         } else {
@@ -801,18 +938,20 @@ private struct ActivityGridView: View {
 }
 
 private struct ActivityLegend: View {
+    var palette: ActivityPalette = .notch
+
     var body: some View {
         HStack(spacing: 3) {
             Text("Less")
             ForEach(0..<5, id: \.self) { level in
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(activityFill(level))
+                    .fill(activityFill(level, palette: palette))
                     .frame(width: 9, height: 9)
             }
             Text("More")
         }
         .font(.system(size: 10))
-        .foregroundStyle(AdaptiveColors.notchSurfaceTertiaryText)
+        .foregroundStyle(palette.tertiary)
         .accessibilityHidden(true)
     }
 }
@@ -833,10 +972,8 @@ extension ScienceStatusDroplet: LiveActivityProviding {
 
     public func makeCompactLeading() -> AnyView {
         AnyView(
-            // A session waiting on the user outranks one that is working.
-            Image(systemName: waitingCount > 0 ? SessionState.needsInput.systemImage : "atom")
-                .font(.system(size: DroppyLiveActivityMetrics.iconSize, weight: .medium))
-                .foregroundStyle(AdaptiveColors.notchSurfacePrimaryText)
+            LiveGlyph(droplet: self, size: DroppyLiveActivityMetrics.iconSize,
+                      tint: AdaptiveColors.notchSurfacePrimaryText)
                 .padding(.trailing, DroppySpacing.sm)
         )
     }
@@ -872,6 +1009,228 @@ extension ScienceStatusDroplet: LiveActivityProviding {
 // MARK: - HUD
 
 extension ScienceStatusDroplet: HUDPresenting {}
+
+// MARK: - Menu bar
+
+extension ScienceStatusDroplet: MenuBarExtraProviding {
+    public func makeMenuBarExtra() -> MenuBarExtraDescriptor? {
+        guard showInMenuBar else { return nil }
+        return MenuBarExtraDescriptor(title: menuBarTitle, systemImage: menuBarSymbol) { [self] in
+            AnyView(ScienceMenuBarPanel(droplet: self))
+        }
+    }
+
+    /// The host shows a symbol only, so the symbol carries the status: a
+    /// hand while a session waits on the user, a filled flask while one
+    /// works, an empty flask otherwise. It changes only when the state does.
+    var menuBarSymbol: String {
+        if waitingCount > 0 { return "hand.raised.fill" }
+        if isLive { return "flask.fill" }
+        return "flask"
+    }
+
+    var menuBarTitle: String {
+        if snapshot.readError != nil, snapshot.sessions.isEmpty { return "Claude Science: can't read status" }
+        let waiting = waitingCount
+        let working = runningCount - waiting
+        if waiting > 0 {
+            return waiting == 1 ? "Claude Science: a session needs input" : "Claude Science: \(waiting) sessions need input"
+        }
+        if working > 0 { return working == 1 ? "Claude Science: working" : "Claude Science: \(working) working" }
+        return "Claude Science: idle"
+    }
+
+    func openDropletSettings() {
+        guard let host else { return }
+        if !host.workspace.openSettings() {
+            host.log.debug("Settings did not open")
+        }
+    }
+}
+
+/// What the menu bar item opens: status, the latest sessions, and the
+/// activity graph. It sits on the system menu material, so it uses the
+/// adaptive colours rather than the notch's white on black.
+private struct ScienceMenuBarPanel: View {
+    @ObservedObject var droplet: ScienceStatusDroplet
+
+    static let width: CGFloat = 300
+    static let cell: CGFloat = 9
+    static let gap: CGFloat = 2
+
+    private var palette: ActivityPalette { .menu }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DroppySpacing.md) {
+            header
+            sessionList
+            activity
+            footer
+        }
+        .frame(width: Self.width, alignment: .leading)
+        .padding(.vertical, DroppySpacing.xs)
+    }
+
+    private var header: some View {
+        HStack(spacing: DroppySpacing.xsm) {
+            LiveGlyph(droplet: droplet, size: 13, tint: droplet.isLive ? palette.primary : palette.secondary)
+            Text("Claude Science")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(palette.primary)
+            Spacer(minLength: DroppySpacing.sm)
+            Text(status)
+                .font(.system(size: 12))
+                .monospacedDigit()
+                .foregroundStyle(palette.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var status: String {
+        let snap = droplet.snapshot
+        if droplet.checking { return "Checking…" }
+        if snap.readError != nil, snap.sessions.isEmpty { return "Can't read status" }
+        let waiting = droplet.waitingCount
+        let working = droplet.runningCount - waiting
+        let parts = [
+            working > 0 ? "\(working) working" : nil,
+            waiting > 0 ? "\(waiting) \(waiting == 1 ? "needs" : "need") input" : nil,
+        ].compactMap { $0 }
+        return parts.isEmpty ? "Idle" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var sessionList: some View {
+        let snap = droplet.snapshot
+        let recent = Array(snap.sessions.prefix(5))
+        if let error = snap.readError, recent.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(error.label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(palette.primary)
+                Text(error.hint)
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.secondary)
+            }
+        } else if recent.isEmpty {
+            Text("No recent sessions")
+                .font(.system(size: 13))
+                .foregroundStyle(palette.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(recent) { session in
+                    MenuSessionRow(session: session, palette: palette) { droplet.openSession(session) }
+                }
+            }
+            .padding(.horizontal, -DroppySpacing.xsm)
+        }
+    }
+
+    @ViewBuilder private var activity: some View {
+        let metric = droplet.activityMetric
+        let weeks = Int((Self.width + Self.gap) / (Self.cell + Self.gap))
+        VStack(alignment: .leading, spacing: DroppySpacing.sm) {
+            HStack(spacing: DroppySpacing.xsm) {
+                Text("Activity")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(palette.secondary)
+                Spacer(minLength: DroppySpacing.sm)
+                ActivityMetricSwitch(selection: $droplet.activityMetric, iconsOnly: true, palette: palette)
+            }
+            if let counts = droplet.history?[metric] {
+                let grid = ActivityGrid(counts: counts, today: Date(), weeks: weeks)
+                ActivityGridView(grid: grid, metric: metric, cell: Self.cell, gap: Self.gap, palette: palette)
+                    .id(metric)
+                    .transition(.opacity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(metric.describe(grid.total)) in the last \(weeks) weeks")
+                HStack(spacing: DroppySpacing.sm) {
+                    Text("\(metric.describe(grid.total)) in \(weeks) weeks")
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(palette.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    ActivityLegend(palette: palette)
+                }
+            } else {
+                Text(droplet.history == nil ? "Checking…" : "Can't read \(metric.title.lowercased()) from this version of Claude Science")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.secondary)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: metric)
+    }
+
+    private var footer: some View {
+        HStack(spacing: DroppySpacing.sm) {
+            Button {
+                droplet.openDashboard()
+            } label: {
+                Text("Open Claude Science")
+            }
+            .buttonStyle(DroppyQuietButtonStyle(size: .small))
+            Spacer(minLength: 0)
+            Button {
+                droplet.openDropletSettings()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(DroppyCircleButtonStyle(size: 24))
+            .help("Science Status settings")
+            .accessibilityLabel("Science Status settings")
+        }
+    }
+}
+
+/// One session in the menu bar panel. The whole row opens it, like a menu
+/// item, with the menu's own hover highlight.
+private struct MenuSessionRow: View {
+    let session: SessionStatus
+    let palette: ActivityPalette
+    let open: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: DroppySpacing.sm) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(session.title.isEmpty ? "Untitled session" : session.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(session.projectName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: DroppySpacing.sm)
+                Text(session.state.label)
+                    .font(.system(size: 12, weight: session.state == .needsInput ? .semibold : .regular))
+                    .foregroundStyle(session.state == .needsInput ? clay : palette.secondary)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(palette.secondary)
+                    .opacity(hovering ? 1 : 0.5)
+            }
+            .padding(.horizontal, DroppySpacing.xsm)
+            .padding(.vertical, 4)
+            .background {
+                if hovering {
+                    RoundedRectangle(cornerRadius: DroppyRadius.small, style: .continuous)
+                        .fill(palette.hoverFill)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open in Claude Science")
+        .accessibilityLabel("\(session.title.isEmpty ? "Untitled session" : session.title), \(session.state.label)")
+        .accessibilityHint("Opens it in Claude Science")
+    }
+}
 
 /// The strip: content at the two outer edges, nothing in the middle —
 /// the middle is the camera housing. Never centred.
@@ -978,7 +1337,7 @@ private struct ScienceSettingsPane: View {
                 }
             }
             DropletSettingsSection {
-                Text("Notch")
+                Text("Notch and menu bar")
                     .font(.headline)
             } content: {
                 DropletSettingsCard {
@@ -986,6 +1345,11 @@ private struct ScienceSettingsPane: View {
                         title: "Keep the pill showing",
                         subtitle: "Show it in the notch while a session works. Off, it appears only when you hover the notch.",
                         isOn: $droplet.keepPillShowing
+                    )
+                    DropletToggleRow(
+                        title: "Show in the menu bar",
+                        subtitle: "A flask that fills while a session works and turns into a hand when one needs you. Click it for your sessions and activity.",
+                        isOn: $droplet.showInMenuBar
                     )
                 }
             }
