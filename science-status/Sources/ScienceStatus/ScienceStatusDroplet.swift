@@ -31,8 +31,18 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
 
     // MARK: - Settings (persisted in host.preferences)
 
-    // Each setting saves only itself: saving all five from one didSet made
+    // Each setting saves only itself: saving all of them from one didSet made
     // restoreSettings() overwrite the stored values it had not read yet.
+
+    /// Pin the pill in the notch while a session works. Off, the host shows it
+    /// only while the pointer is over the notch. Off by default, as DroppyKit
+    /// asks: pinning is a strong claim on someone else's notch.
+    @Published var keepPillShowing = false {
+        didSet {
+            save(keepPillShowing, forKey: "keepPillShowing")
+            if !restoring { publishActivity() }
+        }
+    }
     @Published var pollRunning: Double = 3 { didSet { save(pollRunning, forKey: "pollRunning"); reschedule() } }
     @Published var pollIdle: Double = 30 { didSet { save(pollIdle, forKey: "pollIdle"); reschedule() } }
     @Published var hudOnFinished = true { didSet { save(hudOnFinished, forKey: "hudOnFinished") } }
@@ -300,7 +310,8 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         activitySubject.send(LiveActivityState(
             priority: 120,
             accessibilityTitle: title,
-            isInteractive: false
+            isInteractive: false,
+            joinsPersistentActivitySet: keepPillShowing
         ))
     }
 
@@ -320,6 +331,7 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         hudOnFinished = host.preferences.value(forKey: "hudOnFinished", default: true)
         hudOnNeedsInput = host.preferences.value(forKey: "hudOnNeedsInput", default: true)
         minDuration = host.preferences.value(forKey: "minDuration", default: 30)
+        keepPillShowing = host.preferences.value(forKey: "keepPillShowing", default: false)
     }
 }
 
@@ -851,6 +863,18 @@ private struct ScienceSettingsPane: View {
                         binding: $droplet.minDuration,
                         range: 0 ... 120,
                         step: 15
+                    )
+                }
+            }
+            DropletSettingsSection {
+                Text("Notch")
+                    .font(.headline)
+            } content: {
+                DropletSettingsCard {
+                    DropletToggleRow(
+                        title: "Keep the pill showing",
+                        subtitle: "Show it in the notch while a session works. Off, it appears only when you hover the notch.",
+                        isOn: $droplet.keepPillShowing
                     )
                 }
             }
