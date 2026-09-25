@@ -46,7 +46,6 @@ this Mac's Claude Science instead; keep those shots out of `Assets/`.
 
 ## Before submitting
 
-- Fill in `creator` in `droplet.json` (name, url, gitlab).
 - `droppykit submit`: the Store is a repository, one folder per droplet, and
   this opens the merge request that adds yours. See
   [Submitting](https://getdroppy.app/docs/droppykit/submitting).
