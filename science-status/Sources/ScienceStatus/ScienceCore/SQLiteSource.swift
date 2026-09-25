@@ -108,11 +108,21 @@ private func pendingInputSQL(_ alias: String) -> String {
         """
 }
 
-/// Recent sessions, the way Claude Science's own dashboard picks them:
-/// conversation roots only, never hidden sub-agents, uploads or the
-/// concierge. Working and waiting sessions sort first so they are never
-/// pushed out of `limit`, then by the latest activity anywhere in the tree.
-/// `limit` keeps the poll cheap against a 1 GB db.
+/// What Claude Science's own dashboard counts as a session: conversation
+/// roots only, never hidden sub-agents, uploads or the concierge.
+private func sessionFilterSQL(_ alias: String) -> String {
+    """
+    \(alias).parent_frame_id IS NULL
+      AND \(alias).is_hidden IS NOT 1
+      AND \(alias).conversation_type != 'uploads'
+      AND \(alias).agent_name NOT IN ('CONCIERGE','CANVAS_CONCIERGE')
+    """
+}
+
+/// Recent sessions, the way Claude Science's own dashboard picks them (see
+/// `sessionFilterSQL`). Working and waiting sessions sort first so they are
+/// never pushed out of `limit`, then by the latest activity anywhere in the
+/// tree. `limit` keeps the poll cheap against a 1 GB db.
 func fetchRecentFrames(db: URL, limit: Int = 25) throws -> [FrameRow] {
     let awaiting = "'awaiting_user_response','awaiting_plan_approval'"
     let sql = """
@@ -127,10 +137,7 @@ func fetchRecentFrames(db: URL, limit: Int = 25) throws -> [FrameRow] {
                           OR (c.status = 'processing' AND \(pendingInputSQL("c"))))
                )) THEN 1 ELSE 0 END
         FROM frames f
-        WHERE f.parent_frame_id IS NULL
-          AND f.is_hidden IS NOT 1
-          AND f.conversation_type != 'uploads'
-          AND f.agent_name NOT IN ('CONCIERGE','CANVAS_CONCIERGE')
+        WHERE \(sessionFilterSQL("f"))
         ORDER BY f.status IN ('processing',\(awaiting)) DESC,
                  MAX(f.updated_at, COALESCE((SELECT MAX(c.updated_at) FROM frames c
                      WHERE c.root_frame_id = f.id AND c.parent_frame_id IS NOT NULL), 0)) DESC
@@ -148,6 +155,23 @@ func fetchRecentFrames(db: URL, limit: Int = 25) throws -> [FrameRow] {
             hasPendingInput: cols[8] == "1"
         )
     }
+}
+
+/// Sessions started per local day over the last `days`, for the activity
+/// graph. One grouped count; no names, no content.
+func fetchDailySessionCounts(db: URL, days: Int, now: Date = Date()) throws -> [String: Int] {
+    let since = Int64((now.timeIntervalSince1970 - Double(max(1, days)) * 86_400) * 1000)
+    let sql = """
+        SELECT date(f.created_at / 1000, 'unixepoch', 'localtime'), COUNT(*)
+        FROM frames f
+        WHERE \(sessionFilterSQL("f")) AND f.created_at >= \(since)
+        GROUP BY 1;
+        """
+    var out: [String: Int] = [:]
+    for cols in try runReadOnlyQuery(db: db, sql: sql) where cols.count >= 2 {
+        out[cols[0]] = Int(cols[1]) ?? 0
+    }
+    return out
 }
 
 /// Project names for the ids we show. Never description/context (research).

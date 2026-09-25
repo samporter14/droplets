@@ -32,6 +32,8 @@ public struct ScienceSnapshot: Sendable, Equatable {
 /// behind this so a future schema/API change touches one adapter.
 public protocol ScienceSource: Sendable {
     func snapshot() throws -> ScienceSnapshot
+    /// Sessions started per day over the last `days`, for the activity graph.
+    func dailySessions(days: Int) throws -> DailySessions
 }
 
 /// The real source: documented CLI for daemon health, version and port,
@@ -103,6 +105,11 @@ public struct CombinedScienceSource: ScienceSource {
     private func date(_ ms: Int64) -> Date {
         Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
     }
+
+    public func dailySessions(days: Int) throws -> DailySessions {
+        guard let db = resolveDatabase() else { throw ScienceError.databaseMissing }
+        return DailySessions(counts: try fetchDailySessionCounts(db: db, days: days))
+    }
 }
 
 /// Fixture source for the harness, previews, and tests. No disk, no daemon.
@@ -113,6 +120,30 @@ public struct FakeScienceSource: ScienceSource {
     public init(snapshotValue: ScienceSnapshot) { self.snapshotValue = snapshotValue }
 
     public func snapshot() throws -> ScienceSnapshot { snapshotValue }
+
+    public func dailySessions(days: Int) throws -> DailySessions { Self.demoHistory(days: days) }
+
+    /// A made-up year of sessions: busier on weekdays, quiet on most
+    /// weekends, picking up lately. Seeded, so every shot draws the same.
+    public static func demoHistory(days: Int, today: Date = Date(), calendar: Calendar = .current) -> DailySessions {
+        var seed: UInt64 = 0x5C1E_2026
+        func next() -> Double {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        var counts: [String: Int] = [:]
+        let start = calendar.startOfDay(for: today)
+        for back in 0..<max(0, days) {
+            let day = calendar.date(byAdding: .day, value: -back, to: start)!
+            let r = next()
+            let pace = back < 28 ? 1.6 : (back < 120 ? 1.0 : 0.55)
+            let n = calendar.isDateInWeekend(day)
+                ? (r < 0.8 ? 0 : 1 + Int(r * 2))
+                : (r < 0.22 ? 0 : Int((r * 5 * pace).rounded(.up)))
+            if n > 0 { counts[DailySessions.key(for: day, calendar: calendar)] = n }
+        }
+        return DailySessions(counts: counts)
+    }
 
     private static func link(_ project: String, _ frame: String) -> URL? {
         URL(string: "http://localhost:8765/projects/\(project)/frames/\(frame)")

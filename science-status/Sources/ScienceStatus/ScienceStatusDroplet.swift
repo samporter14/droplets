@@ -46,8 +46,12 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
     @Published private(set) var snapshot = ScienceSnapshot(
         runningCount: nil, daemonVersion: nil, sessions: [])
     @Published private(set) var checking = true
+    /// Sessions started per day, for the activity graph. Nil until first read.
+    @Published private(set) var dailySessions: DailySessions?
 
     private var host: DropletHost?
+    private var historyReadAt: Date?
+    private var readingHistory = false
     private var timer: Timer?
     private var engine = ScienceEngine()
     private var seat: DropletLiveActivitySeat = .none(.idle)
@@ -109,11 +113,35 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         fetching = false
         checking = false
         snapshot = snap
-        for transition in engine.advance(to: snap) {
+        let transitions = engine.advance(to: snap)
+        for transition in transitions {
             handle(transition)
         }
         publishActivity()
+        readHistoryIfDue(sessionsChanged: !transitions.isEmpty)
         reschedule()
+    }
+
+    // MARK: - History (the activity graph)
+
+    /// History changes slowly: read it at activation, every ten minutes, and
+    /// whenever a session starts or finishes. Riding the session poll means
+    /// there is no second timer to stop.
+    private func readHistoryIfDue(sessionsChanged: Bool) {
+        guard host != nil, !readingHistory else { return }
+        if let last = historyReadAt, !sessionsChanged, Date().timeIntervalSince(last) < 600 { return }
+        readingHistory = true
+        let source = self.source
+        Task { [weak self] in
+            let history = await Task.detached(priority: .utility) {
+                try? source.dailySessions(days: 7 * 53)
+            }.value
+            guard let self else { return }
+            self.readingHistory = false
+            guard self.host != nil else { return }
+            self.historyReadAt = Date()
+            if let history { self.dailySessions = history }
+        }
     }
 
     private func reschedule() {
@@ -264,12 +292,26 @@ extension ScienceStatusDroplet: ShelfWidgetProviding {
                     contentHeight: .fixed(168)
                 ),
                 searchKeywords: ["claude", "science", "agent", "session"]
-            )
+            ),
+            ShelfWidgetDescriptor(
+                id: "activity",
+                title: "Science activity",
+                systemImage: "square.grid.3x3.fill",
+                layoutTraits: ShelfWidgetLayoutTraits(
+                    preferredSoloWidth: 420,
+                    preferredPairedWidth: 210,
+                    contentHeight: .fixed(ScienceActivityWidget.height)
+                ),
+                searchKeywords: ["claude", "science", "activity", "history", "graph", "streak"]
+            ),
         ]
     }
 
     public func makeWidgetView(_ id: ShelfWidgetID, context: ShelfWidgetContext) -> AnyView {
-        AnyView(ScienceWidget(droplet: self, context: context))
+        if id == "activity" {
+            return AnyView(ScienceActivityWidget(droplet: self, context: context))
+        }
+        return AnyView(ScienceWidget(droplet: self, context: context))
     }
 
     public func makeWidgetSettingsPopover(_ id: ShelfWidgetID) -> AnyView? { nil }
@@ -452,6 +494,157 @@ private struct ScienceSessionRow: View {
                 .accessibilityLabel("Open \(rowTitle)")
             }
         }
+    }
+}
+
+// MARK: - Activity graph widget
+
+/// Anthropic's clay, the droplet's one accent. Empty days use Droppy's own
+/// raised-tile fill, so only days with sessions carry colour.
+private let clay = Color(red: 217 / 255, green: 119 / 255, blue: 87 / 255)
+
+/// A GitHub-style graph of sessions started per day: a column per week,
+/// as many weeks as the slot is wide.
+private struct ScienceActivityWidget: View {
+    @ObservedObject var droplet: ScienceStatusDroplet
+    let context: ShelfWidgetContext
+
+    static let cell: CGFloat = 11
+    static let gap: CGFloat = 3
+    /// Header, seven rows of squares, footer.
+    static let height: CGFloat = 140
+
+    /// Text at the ends of the header and footer sits in the widget's
+    /// rounded corners, which clip it; this inner inset keeps it clear.
+    static let inset = DroppySpacing.sm
+
+    private var weeks: Int {
+        var width = context.availableSize.width - context.contentInsets.leading - context.contentInsets.trailing
+        if width <= 0 { width = 420 }
+        width -= 2 * Self.inset
+        return max(4, min(53, Int((width + Self.gap) / (Self.cell + Self.gap))))
+    }
+
+    var body: some View {
+        let history = context.isPreview ? FakeScienceSource.demoHistory(days: 7 * 53) : droplet.dailySessions
+        let grid = history.map { ActivityGrid(sessions: $0, today: Date(), weeks: weeks) }
+        VStack(alignment: .leading, spacing: DroppySpacing.sm) {
+            HStack(spacing: DroppySpacing.xsm) {
+                Image(systemName: "square.grid.3x3.fill")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Science activity")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 0)
+                if let grid, !context.isCompact {
+                    Text("\(grid.thisWeek) this week")
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(AdaptiveColors.notchSurfaceSecondaryText)
+
+            if let grid {
+                ActivityGridView(grid: grid, cell: Self.cell, gap: Self.gap)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(sessionCount(grid.total)) in \(span), \(grid.thisWeek) this week")
+                HStack(spacing: DroppySpacing.sm) {
+                    Text("\(sessionCount(grid.total)) in \(span)")
+                        .font(.system(size: 11))
+                        .monospacedDigit()
+                        .foregroundStyle(AdaptiveColors.notchSurfaceSecondaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if !context.isCompact {
+                        ActivityLegend()
+                    }
+                }
+            } else if let error = droplet.snapshot.readError {
+                Text(error.label)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AdaptiveColors.notchSurfacePrimaryText)
+                Text(error.hint)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AdaptiveColors.notchSurfaceSecondaryText)
+            } else {
+                Text("Checking…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(AdaptiveColors.notchSurfacePrimaryText)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Self.inset)
+        .padding(context.contentInsets)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// "the last year", or the months the columns cover.
+    private var span: String {
+        weeks >= 52 ? "the last year" : "the last \(Int((Double(weeks) * 7 / 30.44).rounded())) months"
+    }
+
+    private func sessionCount(_ n: Int) -> String {
+        n == 1 ? "1 session" : "\(n) sessions"
+    }
+}
+
+private func activityFill(_ level: Int) -> Color {
+    switch level {
+    case 0: return AdaptiveColors.notchSurfaceCardFill
+    case 1: return clay.opacity(0.32)
+    case 2: return clay.opacity(0.52)
+    case 3: return clay.opacity(0.76)
+    default: return clay
+    }
+}
+
+private struct ActivityGridView: View {
+    let grid: ActivityGrid
+    let cell: CGFloat
+    let gap: CGFloat
+
+    var body: some View {
+        HStack(alignment: .top, spacing: gap) {
+            ForEach(Array(grid.weeks.enumerated()), id: \.offset) { _, week in
+                VStack(spacing: gap) {
+                    ForEach(0..<7, id: \.self) { row in
+                        if let day = week[row] {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(activityFill(day.level))
+                                .frame(width: cell, height: cell)
+                                .help(tooltip(day))
+                        } else {
+                            Color.clear.frame(width: cell, height: cell)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func tooltip(_ day: ActivityCell) -> String {
+        let date = day.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        switch day.count {
+        case 0: return "No sessions on \(date)"
+        case 1: return "1 session on \(date)"
+        default: return "\(day.count) sessions on \(date)"
+        }
+    }
+}
+
+private struct ActivityLegend: View {
+    var body: some View {
+        HStack(spacing: 3) {
+            Text("Less")
+            ForEach(0..<5, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(activityFill(level))
+                    .frame(width: 9, height: 9)
+            }
+            Text("More")
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(AdaptiveColors.notchSurfaceTertiaryText)
+        .accessibilityHidden(true)
     }
 }
 

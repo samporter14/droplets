@@ -121,6 +121,10 @@ count, never the body.
 - Pill count: sessions running or needing input, counted from those rows.
 - Session length for the short-session threshold: from the latest turn's start
   (`last_user_message_at`, else `created_at`) to this turn's `completed_at`.
+- Activity graph: sessions (same filter) grouped by
+  `date(created_at / 1000, 'unixepoch', 'localtime')` over the last 53 weeks.
+  One grouped count per day; read at activation, every 10 minutes, and when a
+  session starts or finishes.
 
 ## 8. Source & adapter
 

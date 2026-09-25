@@ -39,20 +39,40 @@ final class SQLiteSourceTests: XCTestCase {
 
     private func root(
         _ id: String, status: String, updated: Int, hidden: Int = 0,
-        type: String = "agent", agent: String = "MAIN", lastUser: Int? = nil, completed: Int? = nil
+        type: String = "agent", agent: String = "MAIN", lastUser: Int? = nil, completed: Int? = nil,
+        created: Int64 = 100
     ) -> String {
         """
         INSERT INTO frames VALUES ('\(id)', NULL, '\(id)', '\(agent)', '\(status)', NULL,
-            100, \(updated), \(completed.map(String.init) ?? "NULL"), 'proj', 'Name \(id)', '\(type)',
+            \(created), \(updated), \(completed.map(String.init) ?? "NULL"), 'proj', 'Name \(id)', '\(type)',
             \(hidden), \(lastUser.map(String.init) ?? "NULL"));
         """
     }
 
-    private func child(_ id: String, of parent: String, status: String, hidden: Int) -> String {
+    private func child(_ id: String, of parent: String, status: String, hidden: Int, created: Int64 = 100) -> String {
         """
         INSERT INTO frames VALUES ('\(id)', '\(parent)', '\(parent)', 'SUB', '\(status)', NULL,
-            100, 150, NULL, 'proj', NULL, 'agent', \(hidden), NULL);
+            \(created), 150, NULL, 'proj', NULL, 'agent', \(hidden), NULL);
         """
+    }
+
+    func testCountsSessionsStartedPerLocalDay() throws {
+        let now = Date()
+        let ms = { (d: Date) in Int64(d.timeIntervalSince1970 * 1000) }
+        let today = Calendar.current.startOfDay(for: now).addingTimeInterval(3600)
+        let yesterday = today.addingTimeInterval(-86_400)
+        let lastYear = today.addingTimeInterval(-400 * 86_400)
+        try sqlite([
+            root("t1", status: "completed", updated: 1, created: ms(today)),
+            root("t2", status: "processing", updated: 1, created: ms(today)),
+            root("y1", status: "completed", updated: 1, created: ms(yesterday)),
+            root("old", status: "completed", updated: 1, created: ms(lastYear)),
+            root("hidden", status: "completed", updated: 1, hidden: 1, created: ms(today)),
+            child("sub", of: "t1", status: "completed", hidden: 1, created: ms(today)),
+        ].joined(separator: "\n"))
+
+        let counts = try fetchDailySessionCounts(db: db, days: 371, now: now)
+        XCTAssertEqual(counts, [DailySessions.key(for: today): 2, DailySessions.key(for: yesterday): 1])
     }
 
     private func output(_ id: String, _ json: String) -> String {
