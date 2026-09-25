@@ -56,6 +56,9 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
     private var engine = ScienceEngine()
     private var seat: DropletLiveActivitySeat = .none(.idle)
     private var fetching = false
+    /// A database change arrived mid-read: read once more when it ends.
+    private var changedWhileFetching = false
+    private var watcher: DatabaseWatcher?
     private var restoring = false
     private let activitySubject = CurrentValueSubject<LiveActivityState?, Never>(nil)
 
@@ -76,6 +79,7 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         engine.minDuration = minDuration
         host.log.info("Science Status activated")
         fetch()
+        startWatching()
     }
 
     public func deactivate() {
@@ -83,15 +87,38 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         // code, so anything left running keeps running until Droppy relaunches.
         timer?.invalidate()
         timer = nil
+        watcher?.stop()
+        watcher = nil
         host?.liveActivity.yield(reason: .idle)
         activitySubject.send(nil)
         host = nil
     }
 
-    // MARK: - Polling
+    // MARK: - Watching and polling
 
     func refresh() {
         fetch()
+    }
+
+    /// Read the moment the daemon writes to its database, as Droppy's own
+    /// Agents droplet reacts to its agents. The timer stays as a slow
+    /// fallback for anything the watcher misses.
+    private func startWatching() {
+        guard watcher == nil, host != nil, let database = source.database else { return }
+        // Kept even when the log is not there yet: the watcher reopens it
+        // on its own once the daemon starts.
+        watcher = DatabaseWatcher(database: database) { [weak self] in
+            Task { @MainActor in self?.databaseChanged() }
+        }
+    }
+
+    private func databaseChanged() {
+        guard host != nil else { return }
+        if fetching {
+            changedWhileFetching = true
+        } else {
+            fetch()
+        }
     }
 
     private func fetch() {
@@ -120,6 +147,12 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         publishActivity()
         readHistoryIfDue(sessionsChanged: !transitions.isEmpty)
         reschedule()
+        // The database may have appeared since activation.
+        startWatching()
+        if changedWhileFetching {
+            changedWhileFetching = false
+            fetch()
+        }
     }
 
     // MARK: - History (the activity graph)
@@ -148,10 +181,13 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
         timer?.invalidate()
         timer = nil
         guard host != nil else { return }
-        // Poll fast only while something runs and the row can be seen.
-        // Losing the seat is normal, not an error: slow down, don't stop.
+        // With the database watched, changes arrive as they happen and this
+        // timer is only a fallback. Without it, poll fast only while something
+        // runs and the row can be seen. Losing the seat is normal, not an
+        // error: slow down, don't stop.
         let visible = seat == .compact
-        let interval = (isLive && visible) ? pollRunning : pollIdle
+        let watching = watcher?.isWatching ?? false
+        let interval = (isLive && visible && !watching) ? pollRunning : pollIdle
         timer = Timer.scheduledTimer(withTimeInterval: max(2, interval), repeats: false) {
             [weak self] _ in
             Task { @MainActor in self?.fetch() }
@@ -219,16 +255,26 @@ public final class ScienceStatusDroplet: NSObject, ObservableObject, Droplet {
     // MARK: - Actions
 
     func openSession(_ session: SessionStatus) {
-        guard let host, let url = session.deepLink else { return }
-        if !host.workspace.open(url) {
-            host.log.debug("Workspace refused to open session")
-        }
+        guard let url = session.deepLink else { return }
+        openSignedIn(url)
     }
 
     func openDashboard() {
-        guard let host, let url = URL(string: "http://localhost:\(snapshot.port ?? 8765)") else { return }
-        if !host.workspace.open(url) {
-            host.log.debug("Workspace refused to open dashboard")
+        guard let url = URL(string: "http://localhost:\(snapshot.port ?? 8765)/") else { return }
+        openSignedIn(url)
+    }
+
+    /// The daemon's pages need a signed-in browser. Attach a fresh one-time
+    /// sign-in code, as its own `open` command does, so the link works in a
+    /// browser that has never signed in; the plain link is the fallback.
+    private func openSignedIn(_ url: URL) {
+        let source = self.source
+        Task { [weak self] in
+            let link = await Task.detached(priority: .userInitiated) { source.signedIn(url) }.value
+            guard let host = self?.host else { return }
+            if !host.workspace.open(link) {
+                host.log.debug("Workspace refused to open a Science page")
+            }
         }
     }
 

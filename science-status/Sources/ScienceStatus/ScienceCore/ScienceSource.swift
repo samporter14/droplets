@@ -34,23 +34,62 @@ public protocol ScienceSource: Sendable {
     func snapshot() throws -> ScienceSnapshot
     /// Sessions started per day over the last `days`, for the activity graph.
     func dailySessions(days: Int) throws -> DailySessions
+    /// The database to watch for changes, when there is one on disk.
+    var database: URL? { get }
+    /// `url` made to open signed in. Blocks for a moment: call off the main thread.
+    func signedIn(_ url: URL) -> URL
 }
 
 /// The real source: documented CLI for daemon health, version and port,
 /// read-only SQLite for the sessions and their states. No auth, no network,
 /// no capability.
-public struct CombinedScienceSource: ScienceSource {
+public final class CombinedScienceSource: ScienceSource, @unchecked Sendable {
     /// Used for links only when the CLI cannot say which port it serves on.
     public let fallbackPort: Int
+    /// How long a status result is trusted while its daemon is alive.
+    public let daemonCheckInterval: TimeInterval
 
-    public init(fallbackPort: Int = 8765) { self.fallbackPort = fallbackPort }
+    private let lock = NSLock()
+    private var lastStatus: (status: CLIStatus, at: Date)?
+
+    public init(fallbackPort: Int = 8765, daemonCheckInterval: TimeInterval = 300) {
+        self.fallbackPort = fallbackPort
+        self.daemonCheckInterval = daemonCheckInterval
+    }
+
+    public var database: URL? { resolveDatabase() }
+
+    public func signedIn(_ url: URL) -> URL {
+        fetchLoginNonce().map { addingLoginNonce($0, to: url) } ?? url
+    }
+
+    /// The daemon's status, from the CLI only when needed: the first time,
+    /// when its process has gone, or every `daemonCheckInterval`. In between,
+    /// a kernel check on its pid says it is still up, for microseconds
+    /// instead of the command's 0.3 s.
+    private func daemonStatus() throws -> CLIStatus {
+        lock.lock()
+        let cached = lastStatus
+        lock.unlock()
+        if let cached, let pid = cached.status.pid, processIsAlive(pid),
+           Date().timeIntervalSince(cached.at) < daemonCheckInterval {
+            return cached.status
+        }
+        do {
+            let status = try fetchCLIStatus()
+            lock.lock(); lastStatus = (status, Date()); lock.unlock()
+            return status
+        } catch {
+            lock.lock(); lastStatus = nil; lock.unlock()
+            throw error
+        }
+    }
 
     public func snapshot() throws -> ScienceSnapshot {
-        // CLI first: cheap, documented, and the only word on whether the
-        // daemon is up at all.
+        // Daemon first: the only word on whether it is up at all.
         let cli: CLIStatus
         do {
-            cli = try fetchCLIStatus()
+            cli = try daemonStatus()
         } catch let error as ScienceError {
             // Daemon down is a state, not a crash: report it visibly.
             if error == .daemonNotRunning {
@@ -122,6 +161,10 @@ public struct FakeScienceSource: ScienceSource {
     public func snapshot() throws -> ScienceSnapshot { snapshotValue }
 
     public func dailySessions(days: Int) throws -> DailySessions { Self.demoHistory(days: days) }
+
+    public var database: URL? { nil }
+
+    public func signedIn(_ url: URL) -> URL { url }
 
     /// A made-up year of sessions: busier on weekdays, quiet on most
     /// weekends, picking up lately. Seeded, so every shot draws the same.

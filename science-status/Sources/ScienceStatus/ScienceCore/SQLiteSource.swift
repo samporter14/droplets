@@ -54,27 +54,20 @@ func resolveSqlite3() -> URL {
 /// Run one read-only query, return raw rows split on `separator`.
 func runReadOnlyQuery(db: URL, sql: String, timeout: TimeInterval = 8) throws -> [[String]] {
     let separator = "\u{1F}"
-    let task = Process()
-    task.executableURL = resolveSqlite3()
-    task.arguments = ["-separator", separator, "-list", "file:\(db.path)?mode=ro", sql]
-    let outPipe = Pipe()
-    task.standardOutput = outPipe
-    task.standardError = FileHandle.nullDevice
-    do { try task.run() } catch {
-        throw ScienceError.databaseUnreadable(error.localizedDescription)
-    }
-    let group = DispatchGroup()
-    group.enter()
-    DispatchQueue.global().async { task.waitUntilExit(); group.leave() }
-    if group.wait(timeout: .now() + timeout) == .timedOut {
-        task.terminate()
+    let result: (status: Int32, output: Data)
+    do {
+        result = try runProcess(
+            resolveSqlite3(), ["-separator", separator, "-list", "file:\(db.path)?mode=ro", sql],
+            timeout: timeout)
+    } catch SubprocessFailure.timedOut {
         throw ScienceError.databaseUnreadable("query timed out")
+    } catch {
+        throw ScienceError.databaseUnreadable("\(error)")
     }
-    guard task.terminationStatus == 0 else {
+    guard result.status == 0 else {
         throw ScienceError.databaseUnreadable("query failed (schema changed?)")
     }
-    let out = String(
-        data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let out = String(data: result.output, encoding: .utf8) ?? ""
     return out
         .split(separator: "\n", omittingEmptySubsequences: true)
         .map { $0.split(separator: Character(separator), omittingEmptySubsequences: false).map(String.init) }

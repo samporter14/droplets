@@ -4,20 +4,24 @@
 import Foundation
 
 /// What `claude-science status` tells us. Documented, always exits 0,
-/// no auth to manage — the cheapest signal available.
+/// no auth to manage.
 public struct CLIStatus: Sendable, Equatable {
     public let running: Bool
     public let activeFrames: Int
     public let activeConversations: Int
     public let version: String
     public let port: Int
+    /// The daemon's process, so later checks can ask the kernel whether it is
+    /// still alive instead of running this command again.
+    public let pid: Int32?
 
-    public init(running: Bool, activeFrames: Int, activeConversations: Int, version: String, port: Int) {
+    public init(running: Bool, activeFrames: Int, activeConversations: Int, version: String, port: Int, pid: Int32? = nil) {
         self.running = running
         self.activeFrames = activeFrames
         self.activeConversations = activeConversations
         self.version = version
         self.port = port
+        self.pid = pid
     }
 }
 
@@ -25,6 +29,7 @@ public struct CLIStatus: Sendable, Equatable {
 func resolveCLI() -> URL? {
     let candidates = [
         NSHomeDirectory() + "/.local/bin/claude-science",
+        NSHomeDirectory() + "/.claude-science/bin/claude-science",
         "/opt/homebrew/bin/claude-science",
         "/usr/local/bin/claude-science",
     ]
@@ -32,45 +37,29 @@ func resolveCLI() -> URL? {
         return URL(fileURLWithPath: path)
     }
     // PATH fallback.
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-    task.arguments = ["claude-science"]
-    let pipe = Pipe()
-    task.standardOutput = pipe
-    task.standardError = FileHandle.nullDevice
-    do {
-        try task.run()
-        task.waitUntilExit()
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !out.isEmpty, FileManager.default.isExecutableFile(atPath: out) {
-            return URL(fileURLWithPath: out)
-        }
-    } catch { return nil }
-    return nil
+    guard
+        let (_, data) = try? runProcess(URL(fileURLWithPath: "/usr/bin/which"), ["claude-science"], timeout: 3),
+        let out = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !out.isEmpty, FileManager.default.isExecutableFile(atPath: out)
+    else { return nil }
+    return URL(fileURLWithPath: out)
 }
 
 /// Run `claude-science status` with a timeout and parse the fields we need.
 /// Throws `ScienceError.daemonNotRunning` when `.running` is false.
+///
+/// It costs about 0.3 s of CPU, so callers check the daemon's pid between
+/// runs rather than calling this on every refresh.
 public func fetchCLIStatus(timeout: TimeInterval = 5) throws -> CLIStatus {
     guard let cli = resolveCLI() else { throw ScienceError.cliMissing }
-    let task = Process()
-    task.executableURL = cli
-    task.arguments = ["status"]
-    let outPipe = Pipe()
-    let errPipe = Pipe()
-    task.standardOutput = outPipe
-    task.standardError = errPipe
-    do { try task.run() } catch { throw ScienceError.cliFailed(error.localizedDescription) }
-
-    let group = DispatchGroup()
-    group.enter()
-    DispatchQueue.global().async { task.waitUntilExit(); group.leave() }
-    if group.wait(timeout: .now() + timeout) == .timedOut {
-        task.terminate()
+    let data: Data
+    do {
+        data = try runProcess(cli, ["status"], timeout: timeout).output
+    } catch SubprocessFailure.timedOut {
         throw ScienceError.cliFailed("timed out")
+    } catch {
+        throw ScienceError.cliFailed("\(error)")
     }
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
     guard
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { throw ScienceError.cliFailed("unparseable output") }
@@ -90,6 +79,36 @@ public func fetchCLIStatus(timeout: TimeInterval = 5) throws -> CLIStatus {
         activeFrames: activeFrames,
         activeConversations: activeConversations,
         version: version,
-        port: port
+        port: port,
+        pid: (json["pid"] as? Int).map(Int32.init)
     )
+}
+
+/// Whether a process is still alive: `kill` with signal 0 sends nothing, it
+/// only checks. Microseconds, where the status command takes 0.3 s.
+func processIsAlive(_ pid: Int32) -> Bool {
+    kill(pid, 0) == 0 || errno == EPERM
+}
+
+/// A fresh single-use sign-in code from `claude-science url`, the same code
+/// its own `open` command uses. It expires in about three minutes.
+func fetchLoginNonce(timeout: TimeInterval = 5) -> String? {
+    guard
+        let cli = resolveCLI(),
+        let result = try? runProcess(cli, ["url"], timeout: timeout), result.status == 0,
+        let text = String(data: result.output, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        let url = URLComponents(string: text)
+    else { return nil }
+    return url.queryItems?.first(where: { $0.name == "nonce" })?.value
+}
+
+/// `url` with a sign-in code attached. The daemon accepts the code on any of
+/// its pages: signed-in browsers go straight there, others see one Sign in
+/// button that lands on the same page.
+public func addingLoginNonce(_ nonce: String, to url: URL) -> URL {
+    guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+    var items = (parts.queryItems ?? []).filter { $0.name != "nonce" }
+    items.append(URLQueryItem(name: "nonce", value: nonce))
+    parts.queryItems = items
+    return parts.url ?? url
 }

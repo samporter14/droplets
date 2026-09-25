@@ -23,7 +23,9 @@ It never talks to the agent, hooks the terminal, or contacts any service:
 
 1. The documented `claude-science status` command for daemon health.
 2. A read-only pass over the daemon's SQLite database for the sessions and
-   their states, using the same rules as Claude Science's own dashboard.
+   their states, using the same rules as Claude Science's own dashboard,
+   run the moment the daemon writes to it, so changes show within a second
+   and nothing runs while nothing changes.
 
 No auth to manage, no network capability, no guessing: an unreadable state
 shows as "can't read status" instead of something stale or invented. See

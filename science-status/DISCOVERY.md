@@ -132,9 +132,27 @@ count, never the body.
 state, started/updated times, deep-link localhost URL on the daemon's port).
 CLI `status` (no auth, no capability) + read-only SQLite (no auth, no capability).
 `FakeScienceSource` fixtures for tests and the harness; the harness uses them
-unless `SCIENCE_STATUS_LIVE=1`. Poll 2–5 s running, 30 s idle; open DB read-only
-per poll; all timers stop in `deactivate()`. Fail visibly ("can't read Claude
-Science status"), never show stale/wrong state. Re-test after every Claude Science
+unless `SCIENCE_STATUS_LIVE=1`.
+
+When to read: the moment the daemon writes. A kqueue vnode source on
+`operon-cli.db-wal` (every write lands there first) reports the first write at
+once and then at most one per second; the timer is only a fallback. Not
+FSEvents: it reports a file's changes on close, and the daemon never closes
+its database. Not `-shm`: every reader touches it, the droplet's own included.
+While idle the daemon still writes about every 15 s. Each read opens the DB
+read-only and closes it (about 0.02 s).
+
+Daemon health: `claude-science status` costs about 0.3 s of CPU, so it runs
+at activation, when the daemon's pid (from its own output) is gone, and every
+5 minutes; in between, `kill(pid, 0)` confirms the daemon is alive.
+
+Open links: `claude-science url` prints a single-use `?nonce=` sign-in link.
+The daemon accepts that nonce on any path (it strips it and shows one Sign in
+button, or redirects straight there when the browser is already signed in),
+so the droplet attaches a fresh nonce to the session's own URL on each click.
+
+Everything `activate()` starts stops in `deactivate()`. Fail visibly ("can't
+read Claude Science status"), never show stale/wrong state. Re-test after every Claude Science
 update: this is an undocumented interface, and it ships several times a week.
 
 ## 9. Still to confirm live
