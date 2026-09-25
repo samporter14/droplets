@@ -11,7 +11,8 @@ Claude is a trademark of Anthropic.
 - A **shelf widget** listing recent sessions with their state; tapping opens
   the session in Claude Science.
 - An **activity graph** widget, GitHub-style: a square per day, shaded by how
-  many sessions started that day, as many weeks as the shelf is wide.
+  many sessions you started, messages you sent or tokens the model used that
+  day (switch in the widget), as many weeks as the shelf is wide.
 - A **HUD card** when a session finishes or needs input, with an Open button.
 - A **settings pane** for poll intervals, which states trigger a card, and a
   threshold that keeps short sessions quiet.

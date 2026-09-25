@@ -32,8 +32,9 @@ public struct ScienceSnapshot: Sendable, Equatable {
 /// behind this so a future schema/API change touches one adapter.
 public protocol ScienceSource: Sendable {
     func snapshot() throws -> ScienceSnapshot
-    /// Sessions started per day over the last `days`, for the activity graph.
-    func dailySessions(days: Int) throws -> DailySessions
+    /// Sessions, messages and tokens per day over the last `days`, for the
+    /// activity graph.
+    func activityHistory(days: Int) throws -> ActivityHistory
     /// The database to watch for changes, when there is one on disk.
     var database: URL? { get }
     /// `url` made to open signed in. Blocks for a moment: call off the main thread.
@@ -145,9 +146,15 @@ public final class CombinedScienceSource: ScienceSource, @unchecked Sendable {
         Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
     }
 
-    public func dailySessions(days: Int) throws -> DailySessions {
+    public func activityHistory(days: Int) throws -> ActivityHistory {
         guard let db = resolveDatabase() else { throw ScienceError.databaseMissing }
-        return DailySessions(counts: try fetchDailySessionCounts(db: db, days: days))
+        // Sessions come from the frames table the list already relies on, so
+        // their failure is the history's. Messages and tokens read message
+        // JSON the daemon may reshape; either can go missing on its own.
+        return ActivityHistory(
+            sessions: DailyCounts(counts: try fetchDailySessionCounts(db: db, days: days)),
+            messages: (try? fetchDailyMessageCounts(db: db, days: days)).map(DailyCounts.init),
+            tokens: (try? fetchDailyTokenCounts(db: db, days: days)).map(DailyCounts.init))
     }
 }
 
@@ -160,21 +167,22 @@ public struct FakeScienceSource: ScienceSource {
 
     public func snapshot() throws -> ScienceSnapshot { snapshotValue }
 
-    public func dailySessions(days: Int) throws -> DailySessions { Self.demoHistory(days: days) }
+    public func activityHistory(days: Int) throws -> ActivityHistory { Self.demoHistory(days: days) }
 
     public var database: URL? { nil }
 
     public func signedIn(_ url: URL) -> URL { url }
 
-    /// A made-up year of sessions: busier on weekdays, quiet on most
-    /// weekends, picking up lately. Seeded, so every shot draws the same.
-    public static func demoHistory(days: Int, today: Date = Date(), calendar: Calendar = .current) -> DailySessions {
+    /// A made-up year: busier on weekdays, quiet on most weekends, picking
+    /// up lately, with messages and tokens following the sessions loosely.
+    /// Seeded, so every shot draws the same.
+    public static func demoHistory(days: Int, today: Date = Date(), calendar: Calendar = .current) -> ActivityHistory {
         var seed: UInt64 = 0x5C1E_2026
         func next() -> Double {
             seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             return Double(seed >> 11) / Double(1 << 53)
         }
-        var counts: [String: Int] = [:]
+        var sessions: [String: Int] = [:], messages: [String: Int] = [:], tokens: [String: Int] = [:]
         let start = calendar.startOfDay(for: today)
         for back in 0..<max(0, days) {
             let day = calendar.date(byAdding: .day, value: -back, to: start)!
@@ -183,9 +191,17 @@ public struct FakeScienceSource: ScienceSource {
             let n = calendar.isDateInWeekend(day)
                 ? (r < 0.8 ? 0 : 1 + Int(r * 2))
                 : (r < 0.22 ? 0 : Int((r * 5 * pace).rounded(.up)))
-            if n > 0 { counts[DailySessions.key(for: day, calendar: calendar)] = n }
+            guard n > 0 else { continue }
+            let key = DailyCounts.key(for: day, calendar: calendar)
+            let sent = n * (2 + Int(next() * 7))
+            sessions[key] = n
+            messages[key] = sent
+            tokens[key] = sent * (180_000 + Int(next() * 900_000))
         }
-        return DailySessions(counts: counts)
+        return ActivityHistory(
+            sessions: DailyCounts(counts: sessions),
+            messages: DailyCounts(counts: messages),
+            tokens: DailyCounts(counts: tokens))
     }
 
     private static func link(_ project: String, _ frame: String) -> URL? {

@@ -5,7 +5,7 @@
 - First release.
 - Live activity pill while a Claude Science session runs.
 - Shelf widget with recent sessions; tap to open.
-- Activity graph widget: sessions started per day, GitHub-style.
+- Activity graph widget, GitHub-style: sessions, messages or tokens per day.
 - HUD card on finish and on needs input, with Open.
 - Updates within a second of Claude Science writing, and idles when it does not.
 - Open signs the browser in to Claude Science with a one-time link.

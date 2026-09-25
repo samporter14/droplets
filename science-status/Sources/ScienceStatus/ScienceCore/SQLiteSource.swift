@@ -160,6 +160,54 @@ func fetchDailySessionCounts(db: URL, days: Int, now: Date = Date()) throws -> [
         WHERE \(sessionFilterSQL("f")) AND f.created_at >= \(since)
         GROUP BY 1;
         """
+    return try dailyCounts(db: db, sql: sql)
+}
+
+/// Messages the user sent per local day, for the activity graph.
+///
+/// Only the user's own prompts: `role = user` rows in a session's root
+/// frame that carry an `_intent_id` (a user action). Tool results, harness
+/// notices and one agent's instructions to another are stored as `user`
+/// rows too and are left out. Dated by the message's own `_ts` (ms); rows
+/// written before `_ts` existed cannot be dated and are skipped. Only keys
+/// are read, never `content`.
+func fetchDailyMessageCounts(db: URL, days: Int, now: Date = Date()) throws -> [String: Int] {
+    let since = Int64((now.timeIntervalSince1970 - Double(max(1, days)) * 86_400) * 1000)
+    let sql = """
+        SELECT date(json_extract(m.msg_json, '$._ts') / 1000, 'unixepoch', 'localtime'), COUNT(*)
+        FROM frame_messages m JOIN frames f ON f.id = m.frame_id
+        WHERE \(sessionFilterSQL("f"))
+          AND json_valid(m.msg_json)
+          AND json_extract(m.msg_json, '$.role') = 'user'
+          AND json_type(m.msg_json, '$._intent_id') IS NOT NULL
+          AND json_type(m.msg_json, '$._ts') = 'integer'
+          AND json_extract(m.msg_json, '$._ts') >= \(since)
+        GROUP BY 1;
+        """
+    return try dailyCounts(db: db, sql: sql)
+}
+
+/// Tokens the model processed per local day, for the activity graph: every
+/// assistant reply's `_tokens.input + _tokens.output`, sub-agents included.
+/// `input` already includes cached input (`input = uncached + cache_read +
+/// cache_write` on every row), so nothing is counted twice.
+func fetchDailyTokenCounts(db: URL, days: Int, now: Date = Date()) throws -> [String: Int] {
+    let since = Int64((now.timeIntervalSince1970 - Double(max(1, days)) * 86_400) * 1000)
+    let sql = """
+        SELECT date(json_extract(msg_json, '$._ts') / 1000, 'unixepoch', 'localtime'),
+               SUM(COALESCE(json_extract(msg_json, '$._tokens.input'), 0)
+                   + COALESCE(json_extract(msg_json, '$._tokens.output'), 0))
+        FROM frame_messages
+        WHERE json_valid(msg_json)
+          AND json_type(msg_json, '$._tokens') = 'object'
+          AND json_type(msg_json, '$._ts') = 'integer'
+          AND json_extract(msg_json, '$._ts') >= \(since)
+        GROUP BY 1;
+        """
+    return try dailyCounts(db: db, sql: sql)
+}
+
+private func dailyCounts(db: URL, sql: String) throws -> [String: Int] {
     var out: [String: Int] = [:]
     for cols in try runReadOnlyQuery(db: db, sql: sql) where cols.count >= 2 {
         out[cols[0]] = Int(cols[1]) ?? 0

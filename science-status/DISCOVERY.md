@@ -121,10 +121,22 @@ count, never the body.
 - Pill count: sessions running or needing input, counted from those rows.
 - Session length for the short-session threshold: from the latest turn's start
   (`last_user_message_at`, else `created_at`) to this turn's `completed_at`.
-- Activity graph: sessions (same filter) grouped by
-  `date(created_at / 1000, 'unixepoch', 'localtime')` over the last 53 weeks.
-  One grouped count per day; read at activation, every 10 minutes, and when a
-  session starts or finishes.
+- Activity graph, per local day over the last 53 weeks, read at activation,
+  every 10 minutes, and when a session starts or finishes:
+  - Sessions: the session filter, grouped by
+    `date(created_at / 1000, 'unixepoch', 'localtime')`.
+  - Messages (yours): `frame_messages` rows with `role = user` and an
+    `_intent_id`, in a session's root frame, dated by the message's own
+    `_ts` (ms). The other `user` rows are tool results (about 18.5k),
+    harness notices (about 6.7k) and agents instructing sub-agents; rows
+    older than `_ts` cannot be dated and are skipped. Keys only, never `content`.
+  - Tokens: every assistant row's `_tokens.input + _tokens.output`,
+    sub-agents included, dated by `_ts`. `input = uncached + cache_read +
+    cache_write` on every row, so cached input is not counted twice; the
+    totals match `frames.input_tokens` / `output_tokens`.
+  - Shading: each day's mid-rank percentile among the active days in view,
+    in quarters (GitHub-like), so one heavy token day does not wash out the rest.
+  - Cost: about 0.1 s (messages) and 0.3 s (tokens) on a 1 GB database.
 
 ## 8. Source & adapter
 

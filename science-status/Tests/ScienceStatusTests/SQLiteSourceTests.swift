@@ -21,6 +21,8 @@ final class SQLiteSourceTests: XCTestCase {
                 project_id TEXT, name TEXT, conversation_type TEXT NOT NULL,
                 is_hidden INTEGER, last_user_message_at INTEGER);
             CREATE TABLE frame_blobs (frame_id TEXT, kind TEXT, body TEXT);
+            CREATE TABLE frame_messages (frame_id TEXT NOT NULL, idx INTEGER NOT NULL, msg_json TEXT NOT NULL,
+                msg_uuid TEXT, PRIMARY KEY (frame_id, idx));
             """)
     }
 
@@ -56,6 +58,53 @@ final class SQLiteSourceTests: XCTestCase {
         """
     }
 
+    private func message(_ frame: String, _ idx: Int, _ json: String) -> String {
+        "INSERT INTO frame_messages VALUES ('\(frame)', \(idx), '\(json)', NULL);"
+    }
+
+    func testCountsOnlyYourOwnMessagesPerDay() throws {
+        let ms = { (d: Date) in Int64(d.timeIntervalSince1970 * 1000) }
+        let today = Calendar.current.startOfDay(for: Date()).addingTimeInterval(3600)
+        let yesterday = today.addingTimeInterval(-86_400)
+        try sqlite([
+            root("s1", status: "completed", updated: 1),
+            root("hidden", status: "completed", updated: 1, hidden: 1),
+            child("sub", of: "s1", status: "completed", hidden: 1),
+            // Yours: a user message with an intent, in a session's root.
+            message("s1", 0, #"{"role":"user","_intent_id":"i1","_ts":\#(ms(today)),"content":"x"}"#),
+            message("s1", 1, #"{"role":"user","_intent_id":"i2","_ts":\#(ms(today)),"content":"x"}"#),
+            message("s1", 2, #"{"role":"user","_intent_id":"i3","_ts":\#(ms(yesterday)),"content":"x"}"#),
+            // Not yours: a tool result, a harness notice, an agent's instructions to a
+            // sub-agent, a hidden session, and one too old to have a timestamp.
+            message("s1", 3, #"{"role":"user","_ts":\#(ms(today)),"content":[{"type":"tool_result"}]}"#),
+            message("s1", 4, #"{"role":"user","_harness_notice":true,"_ts":\#(ms(today)),"content":"x"}"#),
+            message("sub", 0, #"{"role":"user","_intent_id":"i4","_ts":\#(ms(today)),"content":"x"}"#),
+            message("hidden", 0, #"{"role":"user","_intent_id":"i5","_ts":\#(ms(today)),"content":"x"}"#),
+            message("s1", 5, #"{"role":"user","_intent_id":"i6","content":"x"}"#),
+            message("s1", 6, #"{"role":"assistant","_ts":\#(ms(today)),"content":"x"}"#),
+        ].joined(separator: "\n"))
+
+        let counts = try fetchDailyMessageCounts(db: db, days: 30)
+        XCTAssertEqual(counts, [DailyCounts.key(for: today): 2, DailyCounts.key(for: yesterday): 1])
+    }
+
+    func testSumsInputAndOutputTokensPerDayIncludingSubAgents() throws {
+        let ms = { (d: Date) in Int64(d.timeIntervalSince1970 * 1000) }
+        let today = Calendar.current.startOfDay(for: Date()).addingTimeInterval(3600)
+        let tokens = { (input: Int, output: Int) in
+            #"{"input":\#(input),"output":\#(output),"cache_read":0,"cache_write":0,"uncached":\#(input)}"#
+        }
+        try sqlite([
+            root("s1", status: "completed", updated: 1),
+            child("sub", of: "s1", status: "completed", hidden: 1),
+            message("s1", 0, #"{"role":"assistant","_ts":\#(ms(today)),"_tokens":\#(tokens(1000, 50))}"#),
+            message("sub", 0, #"{"role":"assistant","_ts":\#(ms(today)),"_tokens":\#(tokens(200, 5))}"#),
+            message("s1", 1, #"{"role":"user","_intent_id":"i1","_ts":\#(ms(today))}"#),
+        ].joined(separator: "\n"))
+
+        XCTAssertEqual(try fetchDailyTokenCounts(db: db, days: 30), [DailyCounts.key(for: today): 1255])
+    }
+
     func testCountsSessionsStartedPerLocalDay() throws {
         let now = Date()
         let ms = { (d: Date) in Int64(d.timeIntervalSince1970 * 1000) }
@@ -72,7 +121,7 @@ final class SQLiteSourceTests: XCTestCase {
         ].joined(separator: "\n"))
 
         let counts = try fetchDailySessionCounts(db: db, days: 371, now: now)
-        XCTAssertEqual(counts, [DailySessions.key(for: today): 2, DailySessions.key(for: yesterday): 1])
+        XCTAssertEqual(counts, [DailyCounts.key(for: today): 2, DailyCounts.key(for: yesterday): 1])
     }
 
     private func output(_ id: String, _ json: String) -> String {
